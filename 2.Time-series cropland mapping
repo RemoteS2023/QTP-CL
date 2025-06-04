@@ -1,0 +1,331 @@
+// 定义研究区\训练样本
+var roi =  table.filter(ee.Filter.eq('Bound', 1));
+var region = '_HHGD_';
+var training00 = table4
+var training0 = training00.filterBounds(roi);
+var label = "TC";
+
+//定义提取年份
+var year_1 = 2010
+
+var imageCollection0 = imageCollection                                    //定义标准化影像数据集
+var num_Crop = training0.filter(ee.Filter.eq('TC',1)).size()              //定义耕地样本点
+var num_NonCrop = training0.filter(ee.Filter.eq('TC',0)).size()           //定义非耕地样本点
+
+var Crop0 = training0.filter(ee.Filter.eq('TC',1))                        //定义耕地样本点
+var NonCrop0 = training0.filter(ee.Filter.eq('TC',0))                     //定义非耕地样本点
+
+var index = 0.5
+var trainingData = NonCrop0.randomColumn('random');
+var NonCrop1 = trainingData.filter(ee.Filter.lte("random", index));
+
+var training = Crop0.merge(NonCrop1)
+// var training = training0
+// print(Crop0.size(),'1-1', NonCrop0.size(),'1-0')
+
+var scale = 30; // 空间分辨率
+var sample_proportion = 0.7;                                             //定义训练、验证样本点的分割比例
+Map.centerObject(roi, 7);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+//the Hehuang Valley
+
+var NIR_mean_crop = 0.440
+var NIR_st_crop = 1.040
+
+var NDVI_mean_crop = 0.402
+var NDVI_st_crop = 0.727
+
+var NIR_mean_Noncrop = -0.038
+var NIR_st_Noncrop = 0.957
+
+var NDVI_mean_Noncrop = -0.016
+var NDVI_st_Noncrop = 1.006
+
+//he Yarlung Zangbo River and its tributaries 
+
+// var NIR_mean_crop = 1.106
+// var NIR_st_crop = 0.877
+
+// var NDVI_mean_crop = 1.910
+// var NDVI_st_crop = 0.856
+
+// var NIR_mean_Noncrop = 0.033
+// var NIR_st_Noncrop = 0.972
+
+// var NDVI_mean_Noncrop = -0.011
+// var NDVI_st_Noncrop = 0.992
+
+///////////////////////////
+
+var NIR_high_crop = NIR_mean_crop + NIR_st_crop
+var NIR_low_crop = NIR_mean_crop - NIR_st_crop
+var NDVI_high_crop = NDVI_mean_crop + NDVI_st_crop
+var NDVI_low_crop = NDVI_mean_crop - NDVI_st_crop
+
+var NIR_high_Noncrop = NIR_mean_Noncrop + NIR_st_Noncrop
+var NIR_low_Noncrop = NIR_mean_Noncrop - NIR_st_Noncrop
+var NDVI_high_Noncrop = NDVI_mean_Noncrop + NDVI_st_Noncrop
+var NDVI_low_Noncrop = NDVI_mean_Noncrop - NDVI_st_Noncrop
+
+// 补充地形因子
+var elevation = DEM.select('elevation').clip(roi);
+var slope = ee.Terrain.slope(elevation);
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+
+//样本清洗模型
+function pointsWithValues(year1, samplePoints, NIR_high_crop, NIR_low_crop, NDVI_high_crop, NDVI_low_crop, NIR_high_Noncrop, NIR_low_Noncrop, NDVI_high_Noncrop, NDVI_low_Noncrop) {
+  var targetImage0 = imageCollection0.filterMetadata('year', 'equals', year1).first();
+  var targetImage = targetImage0.select(['NDVI_st', 'NIR_st']);
+
+  // 样本点提取值的函数
+  var extractValues = function(samplePoints, image, bandNames) {
+    var extractedValues = image.reduceRegions({
+      collection: samplePoints,
+      reducer: ee.Reducer.first(),
+      scale: 30
+    });
+    return extractedValues.map(function(feature) {
+      bandNames.forEach(function(bandName) {
+        feature = feature.set(bandName, feature.get(bandName));
+      });
+      return feature;
+    });
+  };
+
+  // 提取 NDVI 和 NIR 值到样本点
+  var pointsWithBaseValues = extractValues(samplePoints, targetImage, ['NDVI_st', 'NIR_st']);
+  var points_crop = pointsWithBaseValues.filter(ee.Filter.eq('TC',1))
+  var points_Noncrop = pointsWithBaseValues.filter(ee.Filter.eq('TC',0))
+
+  // 根据阈值筛选样本点
+  var filteredPoints_crop = points_crop.filter(ee.Filter.and(
+    ee.Filter.gte('NIR_st', NIR_low_crop),
+    ee.Filter.lte('NIR_st', NIR_high_crop),
+    ee.Filter.gte('NDVI_st', NDVI_low_crop),
+    ee.Filter.lte('NDVI_st', NDVI_high_crop)
+  ));
+  
+  var filteredPoints_Noncrop = points_Noncrop
+    .filter(ee.Filter.and(
+    ee.Filter.gte('NIR_st', NIR_low_Noncrop),
+    ee.Filter.lte('NIR_st', NIR_high_Noncrop),
+    ee.Filter.gte('NDVI_st', NDVI_low_Noncrop),
+    ee.Filter.lte('NDVI_st', NDVI_high_Noncrop)
+  ));
+
+  var filteredPoints = filteredPoints_crop.merge(filteredPoints_Noncrop)
+  return filteredPoints;
+}
+
+var result_points = pointsWithValues(year_1, training,NIR_high_crop, NIR_low_crop, NDVI_high_crop, NDVI_low_crop, NIR_high_Noncrop, NIR_low_Noncrop, NDVI_high_Noncrop, NDVI_low_Noncrop)               //
+var remove_Crop = result_points.filter(ee.Filter.eq('TC', 1));              // 获取剔除的耕地样本点
+var remove_NonCrop = result_points.filter(ee.Filter.eq('TC', 0));           // 获取剔除的非耕地样本点
+
+print(remove_Crop.size(),'3-1',remove_NonCrop.size(),'3-0')
+
+////////////////////////////////////////////////////////////////////////////////
+
+//定义主成分分析
+function PCA(image, bands, region, scale) {
+  // 提取感兴趣波段
+  var selectedBands = image.select(bands);
+  var bandNames = selectedBands.bandNames();
+
+  // 计算平均值并中心化数据
+  var meanDict = selectedBands.reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: region,
+      scale: scale,
+      maxPixels: 1e9
+  });
+  var means = ee.Image.constant(meanDict.values(bandNames));
+  var centered = selectedBands.subtract(means);
+
+  // 生成新波段名称
+  var getNewBandNames = function(prefix) {
+    return ee.List.sequence(1, bandNames.length())
+      .map(function(index) {
+        return ee.String(prefix).cat(ee.Number(index).format('%02d'));
+      });
+  };
+
+  // 执行主成分分析
+  var getPrincipalComponents = function(centered, scale, region) {
+    // 转换为数组
+    var arrays = centered.toArray();
+
+    // 计算协方差矩阵
+    var covar = arrays.reduceRegion({
+      reducer: ee.Reducer.centeredCovariance(),
+      geometry: region,
+      scale: scale,
+      maxPixels: 1e13
+    });
+
+    // 提取协方差矩阵和特征分解
+    var covarArray = ee.Array(covar.get('array'));
+    var eigens = covarArray.eigen();
+
+    // 特征值与特征向量
+    var eigenValues = eigens.slice(1, 0, 1);
+    var eigenVectors = eigens.slice(1, 1);
+
+    // 转换为二维图像数组
+    var arrayImage = arrays.toArray(1);
+
+    // 计算主成分
+    var principalComponents = ee.Image(eigenVectors).matrixMultiply(arrayImage);
+
+    // 计算标准差图像
+    var sdImage = ee.Image(eigenValues.sqrt())
+                    .arrayProject([0])
+                    .arrayFlatten([getNewBandNames('sd')]);
+
+    // 主成分结果标准化
+    principalComponents = principalComponents
+      .arrayProject([0])
+      .arrayFlatten([getNewBandNames('pc')])
+      .divide(sdImage);
+
+    return principalComponents;
+  };
+
+  // 调用主成分分析函数
+  return getPrincipalComponents(centered, scale, region);
+};
+
+/////////////////////////////////////////////////////////////////////////////////////////
+
+// 定义主函数
+function classifyAndEvaluate(year,samp,region,lable) {
+
+  // 筛选目标年份的影像
+  var image22 = imageCollection0.filterMetadata('year', 'equals', year);
+  var image2 = ee.Image(image22.first());
+  
+  // 执行 PCA
+  var bands = ['BLUE_st', 'GREEN_st', 'RED_st', 'NIR_st', 'SWIR1_st', 'SWIR2_st']; // 波段选择
+  var image3 = PCA(image2, bands, roi, scale);
+  
+  var image4 = image3.select('pc01');
+
+  // 合成最终输入影像
+  var elevation = DEM.select('elevation').clip(roi);
+  var slope = ee.Terrain.slope(elevation);
+  var aspect = ee.Terrain.aspect(elevation);
+  var image7 = image2.addBands([image4, elevation, slope, aspect]);
+  
+  //print(image7)
+
+
+  // 划分训练集与验证集
+  var trainingData = samp.randomColumn('random');
+  var sample_training = trainingData.filter(ee.Filter.lte("random", sample_proportion));
+  var sample_validate = trainingData.filter(ee.Filter.gt("random", sample_proportion));
+
+  // 提取样本特征
+  var trainingSamples = image7.sampleRegions({
+    collection: sample_training, 
+    properties: [lable], 
+    scale: scale,
+    tileScale: 16
+  });
+
+  var validationSamples = image7.sampleRegions({
+    collection: sample_validate, 
+    properties: [lable], 
+    scale: scale,
+    tileScale: 16
+  });
+
+  // 训练分类器
+  var classifier = ee.Classifier.smileRandomForest(200)
+      .train({
+        features: trainingSamples, 
+        classProperty: lable, 
+        inputProperties: image7.bandNames()
+      });
+
+  // 分类影像
+  var Classified_RF = image7.classify(classifier).byte()//.focal_mode(1, 'square', 'pixels');
+  // print(Classified_RF)
+
+  // // 可视化分类结果
+  // var imageVisParam = {min: 0, max: 1, palette: ['red', 'green']};
+  // Map.addLayer(Classified_RF, imageVisParam, 'Classified ' + year);
+  
+    // 评价分类精度
+  var validated = validationSamples.classify(classifier);
+  var confusionMatrix = validated.errorMatrix(lable, 'classification');
+  // var accuracy = testAccuracy.accuracy();
+  // var kappa = testAccuracy.kappa();
+  var results = [];
+
+// 从混淆矩阵中提取数据
+  var TP = confusionMatrix.array().get([1, 1]).getInfo();
+  var FP = confusionMatrix.array().get([0, 1]).getInfo();
+  var TN = confusionMatrix.array().get([0, 0]).getInfo();  
+  var FN = confusionMatrix.array().get([1, 0]).getInfo();
+  // 计算精确度、召回率和 fpr，保留三位小数
+  var Accuracy = ((TP + TN) / (TP + TN + FP + FN)).toFixed(3);
+  var precision = (TP / (TP + FP)).toFixed(3);
+  var recall = (TP / (TP + FN)).toFixed(3);
+  var fpr = (FP)/(TN+FP).toFixed(3);
+  var MCC = (TP * TN - FP * FN) / Math.sqrt((TP + FP) * (TP + FN) * (TN + FP) * (TN + FN));
+  var OA = ((TP + TN) / (TP + TN + FP + FN)).toFixed(3);
+  var P_o = (TP + TN) / (TP + TN + FP + FN);  // 计算总体精度 (P_o)
+  var P_e = ((TP + FP) * (TP + FN) + (TN + FP) * (TN + FN)) / Math.pow((TP + TN + FP + FN), 2);  // 计算期望精度 (P_e)
+  var recall = TP/(TP + FN)  // 计算recall
+  var Kappa = ((P_o - P_e) / (1 - P_e)).toFixed(3);  // 计算 Kappa 系数
+
+  var UA = TP / (TP + FP).toFixed(3);  // Precision
+  var PA = TP / (TP + FN).toFixed(3);  // Recall
+  var F1 = UA * PA * 2 / (UA + PA).toFixed(3);
+  
+    // 将结果添加到数组中
+  results.push({
+    'OA': OA,
+    'UA':UA,
+    'PA':PA,
+    'F1':F1,
+    'recall': recall,
+    'Kappa':Kappa,
+    'Accuracy': Accuracy,
+    'Precision': precision,
+    'MCC':MCC,
+    'FPR': fpr,
+  });  
+  
+  print(results,year.toString())
+  return Classified_RF
+}
+
+var resultt = classifyAndEvaluate(year_1, training, region, label)
+ 
+Map.addLayer(resultt,imageVisParam,'result')
+
+var re_point = training
+
+Map.addLayer(re_point.filter(ee.Filter.eq('TC', 1)), {color: 'green'},'1')
+Map.addLayer(re_point.filter(ee.Filter.eq('TC', 0)), {color: 'red'},'0')
+
+  Export.image.toAsset({               
+	image:resultt,
+    description:'CL'+ region + year_1,
+  	region:roi,
+  	scale:30,
+  	crs:"EPSG:4326",
+  	maxPixels:1e13,
+  })
+
+  Export.image.toDrive({
+	  image:resultt,
+    description:'CL'+ region + year_1,
+  	region:roi,
+  	scale:30,
+  	crs:"EPSG:4326",
+  	maxPixels:1e13,
+  })
