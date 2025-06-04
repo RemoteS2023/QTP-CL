@@ -1,0 +1,136 @@
+// 示例参数
+var startYear = 1988; // 起始年份
+var endYear = 2024;   // 结束年份
+var roi = table.filter(ee.Filter.eq('Bound', 2)); // 感兴趣区域
+// var roi = geometry
+
+
+var elevation = image.select('elevation').clip(roi)
+var slope = ee.Terrain.slope(elevation);
+var aspect = ee.Terrain.aspect(elevation);
+
+// 定义计算 NDVI 的函数
+function calculateNDVI(image) {
+    var ndvi = image.normalizedDifference(['NIR', 'RED']).rename('NDVI');
+    return image.addBands(ndvi);
+}
+
+// 定义标准化函数：将影像的每个波段减去其均值再除以标准差
+function standardizeImage(image, bandNames, geometry) {
+    var meanDict = image.reduceRegion({
+        reducer: ee.Reducer.mean(),
+        geometry: geometry,
+        scale: 30,
+        maxPixels: 1e9
+    });
+
+    var stdDevDict = image.reduceRegion({
+        reducer: ee.Reducer.stdDev(),
+        geometry: geometry,
+        scale: 30,
+        maxPixels: 1e9
+    });
+
+    var meanImage = ee.Image.constant(meanDict.values(bandNames));
+    var stdDevImage = ee.Image.constant(stdDevDict.values(bandNames));
+
+    var standardizedImage = image.subtract(meanImage).divide(stdDevImage).rename(bandNames.map(function(name) {
+        return name + '_st';
+    }));
+
+    return standardizedImage;
+}
+
+// 根据年份选择传感器和波段
+function getSensorAndBands(year) {
+    var sensorType, collection, bands;
+
+    if (year >= 1985 && year <= 2011) {
+        sensorType = 'Landsat5';
+        collection = IC_5; // 请确保定义了 IC_5
+        bands = ['B1', 'B2', 'B3', 'B4', 'B5', 'B7'];
+    } else if (year === 2012) {
+        sensorType = 'Landsat7';
+        collection = IC_7; // 请确保定义了 IC_7
+        bands = ['B1', 'B2', 'B3', 'B4', 'B5', 'B7'];
+    } else if (year > 2012) {
+        sensorType = 'Landsat8';
+        collection = IC_8; // 请确保定义了 IC_8
+        bands = ['B2', 'B3', 'B4', 'B5', 'B6', 'B7'];
+    } else {
+        throw new Error('年份超出支持范围：' + year);
+    }
+
+    return {sensorType: sensorType, collection: collection, bands: bands};
+}
+
+// 定义处理影像的函数
+function processImage(year, region) {
+    // 获取起止日期
+    var startDate = year + '-01-01';
+    var endDate = year + '-12-31';
+
+    // 获取传感器配置
+    var sensorConfig = getSensorAndBands(year);
+    var sensorType = sensorConfig.sensorType;
+    var collection = sensorConfig.collection;
+    var bands = sensorConfig.bands;
+
+    // 筛选时间和范围
+    var filteredCollection = collection.filterDate(startDate, endDate)
+                                       .filterBounds(region);
+
+    // 重命名波段
+    var renamedBands = ['BLUE', 'GREEN', 'RED', 'NIR', 'SWIR1', 'SWIR2'];
+    var mosaicByYear = filteredCollection.select(bands, renamedBands);
+
+    // 质量镶嵌
+    var imageMosaic = mosaicByYear.map(calculateNDVI)
+                                  .qualityMosaic('NDVI');
+
+    // Z-Score 标准化
+    var renamedBands_Z = ['BLUE', 'GREEN', 'RED', 'NIR', 'SWIR1', 'SWIR2', 'NDVI'];
+    var image_Z = standardizeImage(imageMosaic, renamedBands_Z, region);
+
+    return ee.Image(image_Z).clip(region).set('year', year); // 添加年份属性
+}
+
+// 定义生成时间序列的函数
+function generateTimeSeries(startYear, endYear, region) {
+    var imageCollection = []; // 用于存储每年处理后的影像
+
+    for (var year = startYear; year <= endYear; year++) {
+        var processedImage = processImage(year, region);
+        Map.addLayer(processedImage, {bands: ['RED_st', 'GREEN_st', 'BLUE_st'], min: -2, max: 2}, 'First Image');
+        Export.image.toAsset({
+		    image:processedImage,
+      	description:'Image_st_YJLH_' + year,
+      	region:region,
+      	scale:30,
+      	maxPixels:1e13,
+        })
+        
+        imageCollection.push(processedImage); // 将每年生成的影像添加到列表中
+    }
+
+    return ee.ImageCollection(imageCollection); // 转换为 ImageCollection
+}
+
+
+// 调用生成时间序列函数
+var timeSeries = generateTimeSeries(startYear, endYear, roi);
+
+// 输出和可视化结果
+print('Time Series:', timeSeries);
+
+// 显示时间序列中的第一景影像（可根据需求调整索引）
+var firstImage = timeSeries.first();
+Map.centerObject(roi);
+// Map.addLayer(firstImage, {bands: ['RED_st', 'GREEN_st', 'BLUE_st'], min: -2, max: 2}, 'First Image');
+
+
+
+
+
+
+
