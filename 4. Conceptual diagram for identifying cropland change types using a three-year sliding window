@@ -1,0 +1,47 @@
+// 每张影像是单波段，1为耕地，0为非耕地
+var croplandCollection = imageCollection
+
+// 提取所有年份，按时间排序
+var years = ee.List(croplandCollection.aggregate_array('year')).sort();
+
+// 定义一个函数，输入当前年份（currYear），返回一个分类图层
+function classifyYear (currYear) {
+  var prevYear = currYear - 1;
+  var nextYear = currYear + 1;
+  var imgPrev = croplandCollection.filter(ee.Filter.eq('year', prevYear)).first()
+  var imgCurr = croplandCollection.filter(ee.Filter.eq('year', currYear)).first()
+  var imgNext = croplandCollection.filter(ee.Filter.eq('year', nextYear)).first()
+  
+  // Map.addLayer(imgPrev,imageVisParam,'imgPrev')
+  // Map.addLayer(imgCurr,imageVisParam,'imgCurr')  
+  // Map.addLayer(imgNext,imageVisParam,'imgNext')  
+  
+  // 构建编码
+  var code = imgPrev.multiply(100).add(imgCurr.multiply(10)).add(imgNext)
+   //Map.addLayer(code,null,'code')
+  
+  // 分类映射：S=1, F=2, A=3, R=4
+  var classified = code.remap(
+    [111, 110, 101, 100, 10, 11, 1, 000],  // 完整考虑 0~111 的组合
+    [1,   2,   2,   3,   4,   4,   3,   0]     // 0 代表“稳定非耕地”不参与识别
+  );
+
+  // 统计各类像元数量
+  var stats = classified.reduceRegion({
+    reducer: ee.Reducer.frequencyHistogram(),
+    geometry: classified.geometry(),  // 或你自定义的 study area
+    scale: 30,
+    maxPixels: 1e13
+  });
+
+  print('各类像元数量（year=' + currYear + '）：', stats);
+
+  return classified.set('year', currYear);
+};
+
+for(var i=0;i<35;i++){
+  var year0 = 1989 + i
+  var result = classifyYear(year0)
+  // print(result)
+  //Map.addLayer(result, {min: 0, max: 4, palette: ['white','green', 'orange', 'gray', 'blue']},year0.toString())
+}
