@@ -1,0 +1,42 @@
+var Image0 = image2
+
+var ImageMask = Image0.eq(1)
+// 应用掩膜，只保留 classification == 1 的像元
+var Image = Image0.updateMask(ImageMask);
+
+print(Image)
+///////////////////////////////////////////////////////////////////////////////////
+
+// 定义像素统计函数
+function pixelCount(MaskedImage, roi) {
+  var count = MaskedImage.reduceRegion({
+    reducer: ee.Reducer.count(), // 使用 count reducer 统计像元数量
+    geometry: roi,
+    scale: 30, // 设置缩放级别
+    maxPixels: 1e13, // 设置最大像素数以避免计算超时
+  });
+  return count;
+}
+
+// 获取 PAC 字段中的唯一值列表
+var pacValues = ee.List(table.distinct('PAC').aggregate_array('PAC'));
+
+// 定义结果数组
+var results = [];
+
+// 循环遍历每个 PAC 区域
+pacValues.getInfo().forEach(function(pacValue) {
+  // 根据 PAC 字段值筛选 ROI
+  var roi = table.filter(ee.Filter.eq('PAC', pacValue)).geometry();
+
+  // 应用掩膜并统计像素数量
+  var count = pixelCount(Image, roi);
+
+  // 提取像素数量并存储到结果数组中
+  var pixelCountValue = count.get('classification'); // 假设你想提取 typecode 字段
+  var resultString = pacValue + '：' + pixelCountValue.getInfo();
+  results.push(resultString);
+});
+
+// 打印结果数组
+print(results);
