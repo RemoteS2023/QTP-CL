@@ -1,8 +1,7 @@
 // 示例参数
 var startYear = 1988; // 起始年份
 var endYear = 2024;   // 结束年份
-var roi = table.filter(ee.Filter.eq('Bound', 2)); // 感兴趣区域
-// var roi = geometry
+var roi = table.filter(ee.Filter.eq('Bound', 1)); // 感兴趣区域
 
 
 var elevation = image.select('elevation').clip(roi)
@@ -116,21 +115,13 @@ function generateTimeSeries(startYear, endYear, region) {
     return ee.ImageCollection(imageCollection); // 转换为 ImageCollection
 }
 
-
 // 调用生成时间序列函数
 var timeSeries = generateTimeSeries(startYear, endYear, roi);
 
 // 输出和可视化结果
 print('Time Series:', timeSeries);
 
-// 显示时间序列中的第一景影像（可根据需求调整索引）
+// 显示时间序列中的第一景影像
 var firstImage = timeSeries.first();
 Map.centerObject(roi);
 // Map.addLayer(firstImage, {bands: ['RED_st', 'GREEN_st', 'BLUE_st'], min: -2, max: 2}, 'First Image');
-
-
-
-
-
-
-
