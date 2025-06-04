@@ -1,0 +1,89 @@
+var croplandCollection = imageCollection
+var roi = table.filter(ee.Filter.eq('Bound', 1));
+
+// 按年份排序好的 croplandCollection（37张影像，每张是二元分类：1为耕地，0为非耕地）
+var sortedList = croplandCollection.sort('year').toList(croplandCollection.size());
+
+
+// 步骤 1：计算 37 年累计耕地次数
+var sumCrop = ee.Image(0);
+for (var i = 0; i < 37; i++) {
+  var img = ee.Image(sortedList.get(i)).byte();
+  sumCrop = sumCrop.add(img);
+}
+sumCrop = sumCrop.rename('sumCrop');
+
+
+////////////////////////////////////////////////////////////////////////////////
+
+// 步骤 2：计算变化频次
+
+// 初始化累积变化图像（初始全为0）
+var changeSum = ee.Image(0).rename('changeCount');
+
+// 遍历36次（即从第1张到第36张，和它们的上一张做比较）
+for (var i = 1; i < 37; i++) {
+  var prev = ee.Image(sortedList.get(i - 1)).byte();  // 上一年影像
+  var curr = ee.Image(sortedList.get(i)).byte();      // 当前年影像
+  
+  var changed = prev.neq(curr);  // 像元值不一样就为1，表示发生变化
+  changeSum = changeSum.add(changed);  // 累加变化次数
+}
+
+// 显示结果（每个像元的变化次数）
+Map.addLayer(changeSum, {min: 0, max: 10, palette: ['white', 'blue', 'red']}, '变化频数');
+
+// 打印图像
+print('变化频数图像', changeSum);
+
+
+//////////////////////////////////////////////////////////////////////////////////////
+
+
+// // 假设 changeSum 是你刚刚生成的变化频数图像（每个像元值为 0~36）
+// var histogram = changeSum.reduceRegion({
+//   reducer: ee.Reducer.frequencyHistogram(),  // 统计各个值的像元数量
+//   geometry: changeSum.geometry(),            // 或者你自定义的 ROI 区域
+//   scale: 30,
+//   maxPixels: 1e13
+// });
+
+// print('变化频数的像元数量分布：', histogram);
+
+// 步骤 3：生成基础变化等级图层（默认都赋值为变化区）
+var changeLevel = changeSum.expression(
+  "b('changeCount') <= 5 ? 2 : " +
+  "b('changeCount') <= 15 ? 3 : 4"
+).rename('changeLevel');
+
+// 步骤 4：生成稳定图层
+var stableCrop = sumCrop.eq(37).rename('stableCrop');     // 值为 true 的稳定耕地
+var stableNonCrop = sumCrop.eq(0).rename('stableNonCrop'); // 值为 true 的稳定非耕地
+
+// 步骤 5：将稳定图层写入变化等级图层，覆盖其原值
+// 优先设置稳定耕地为 1，稳定非耕地为 0，其余保留 changeLevel 值
+var final = changeLevel
+  .where(stableNonCrop, 0)
+  .where(stableCrop, 1)
+  .rename('finalStability');
+
+// 步骤 6：显示和导出
+Map.addLayer(final.clip(roi), 
+  {min: 0, max: 4, palette: ['gray', 'green', 'yellow', 'orange', 'red']}, 
+  '五类稳定性图层');
+
+print('五类统计', final.reduceRegion({
+  reducer: ee.Reducer.frequencyHistogram(),
+  geometry: roi.geometry(),
+  scale: 30,
+  maxPixels: 1e13
+}));
+
+// Export.image.toDrive({
+//   image: final,
+//   description: 'Stability_Final_FiveClass',
+//   region: roi,
+//   scale: 30,
+//   crs: 'EPSG:4326',
+//   maxPixels: 1e13
+// });
